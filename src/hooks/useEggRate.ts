@@ -1,42 +1,61 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { createClient } from "@/lib/supabase/client";
 
 export interface RateEntry {
-  rate: number;       // per tray
+  rate: number;
   note: string;
   updatedBy: string;
-  updatedAt: string;  // ISO string
+  updatedAt: string;
 }
 
-const STORAGE_KEY = "layerfarm_egg_rate";
-
-const DEFAULT_HISTORY: RateEntry[] = [
-  { rate: 1020, note: "Market open",     updatedBy: "Ali Hassan",  updatedAt: new Date(Date.now() - 86400000 * 2).toISOString() },
-  { rate: 1035, note: "Rate increased",  updatedBy: "Usman Khan",  updatedAt: new Date(Date.now() - 86400000 * 1).toISOString() },
-  { rate: 1050, note: "Current market",  updatedBy: "Ali Hassan",  updatedAt: new Date().toISOString() },
-];
-
 export function useEggRate() {
-  const [history, setHistory] = useState<RateEntry[]>(DEFAULT_HISTORY);
+  const [history, setHistory] = useState<RateEntry[]>([]);
   const [loaded,  setLoaded]  = useState(false);
 
-  // Load from localStorage on mount
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) setHistory(JSON.parse(stored));
-    } catch {}
-    setLoaded(true);
+    const supabase = createClient();
+    supabase
+      .from("egg_rates")
+      .select("rate, note, updated_by, created_at")
+      .order("created_at", { ascending: true })
+      .limit(30)
+      .then(({ data }) => {
+        if (data && data.length > 0) {
+          setHistory(data.map(r => ({
+            rate:      Number(r.rate),
+            note:      r.note || "",
+            updatedBy: r.updated_by || "Manager",
+            updatedAt: r.created_at,
+          })));
+        } else {
+          // fallback seed if table is empty
+          setHistory([{ rate: 1050, note: "Current market", updatedBy: "Manager", updatedAt: new Date().toISOString() }]);
+        }
+        setLoaded(true);
+      });
   }, []);
 
   const current = history[history.length - 1];
 
-  function updateRate(rate: number, note: string, updatedBy: string) {
-    const entry: RateEntry = { rate, note, updatedBy, updatedAt: new Date().toISOString() };
-    const next = [...history.slice(-9), entry]; // keep last 10
-    setHistory(next);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+  async function updateRate(rate: number, note: string, updatedBy: string) {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("egg_rates")
+      .insert({ rate, note, updated_by: updatedBy })
+      .select()
+      .single();
+
+    if (!error && data) {
+      const entry: RateEntry = {
+        rate:      Number(data.rate),
+        note:      data.note || "",
+        updatedBy: data.updated_by || updatedBy,
+        updatedAt: data.created_at,
+      };
+      setHistory(prev => [...prev.slice(-9), entry]);
+    }
   }
 
   return {
