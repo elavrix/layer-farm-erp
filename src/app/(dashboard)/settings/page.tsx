@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Header } from "@/components/layout/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Settings, Bell, FileText, Server, Save } from "lucide-react";
+import { Settings, Bell, FileText, Server, Save, ShieldAlert } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 interface NotifToggle {
   key: string;
@@ -45,6 +46,28 @@ export default function SettingsPage() {
     Object.fromEntries(notifToggles.map((t) => [t.key, t.key !== "newSale" && t.key !== "dailyBackup"]))
   );
 
+  // Admin state
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function checkRole() {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+      setIsAdmin(profile?.role === "admin");
+    }
+    checkRole();
+  }, []);
+
   function toggleNotif(key: string) {
     setNotifs((prev) => ({ ...prev, [key]: !prev[key] }));
   }
@@ -54,11 +77,111 @@ export default function SettingsPage() {
     setTimeout(() => setSaved(false), 2000);
   }
 
+  async function handleResetData() {
+    setResetting(true);
+    setResetError(null);
+    try {
+      const supabase = createClient();
+
+      // Delete all rows from each table
+      const tables = [
+        "daily_entries",
+        "sales",
+        "purchases",
+        "inventory_feed",
+        "inventory_medicine",
+        "egg_rates",
+      ];
+      for (const table of tables) {
+        const { error } = await supabase.from(table).delete().neq("id", "00000000-0000-0000-0000-000000000000");
+        if (error) throw new Error(`Failed to clear ${table}: ${error.message}`);
+      }
+
+      // Re-insert default egg rate
+      const { error: insertError } = await supabase.from("egg_rates").insert({
+        rate: 1050,
+        note: "Initial rate",
+        updated_by: "Manager",
+      });
+      if (insertError) throw new Error(`Failed to insert default egg rate: ${insertError.message}`);
+
+      setResetSuccess(true);
+      setShowConfirm(false);
+      setTimeout(() => setResetSuccess(false), 4000);
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : "An unexpected error occurred.");
+    } finally {
+      setResetting(false);
+    }
+  }
+
   return (
     <>
       <Header title="Settings" />
       <main className="flex-1 p-6 space-y-6">
         <div className="grid gap-6 lg:grid-cols-2">
+          {/* Admin Tools — visible only to admins */}
+          {isAdmin && (
+            <Card className="lg:col-span-2 border-red-200 dark:border-red-900/60">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400">
+                  <ShieldAlert className="h-4 w-4" />
+                  Admin Tools
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 p-4">
+                  <p className="text-xs font-medium text-red-700 dark:text-red-400 mb-1">Danger Zone</p>
+                  <p className="text-[11px] text-red-600/80 dark:text-red-400/70 leading-relaxed mb-3">
+                    The actions below are irreversible. Use with extreme caution.
+                  </p>
+
+                  {!showConfirm ? (
+                    <button
+                      onClick={() => { setResetError(null); setShowConfirm(true); }}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 active:bg-red-800 transition-colors"
+                    >
+                      Reset All Data
+                    </button>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-xs font-semibold text-red-700 dark:text-red-400">
+                        Are you sure? This will delete ALL sales, purchases, daily entries, inventory and egg rates. This cannot be undone.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleResetData}
+                          disabled={resetting}
+                          className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 active:bg-red-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {resetting ? "Resetting…" : "Yes, Delete Everything"}
+                        </button>
+                        <button
+                          onClick={() => setShowConfirm(false)}
+                          disabled={resetting}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {resetSuccess && (
+                    <p className="mt-3 text-xs font-medium text-green-700 dark:text-green-400">
+                      All data has been reset. Default egg rate restored.
+                    </p>
+                  )}
+                  {resetError && (
+                    <p className="mt-3 text-xs font-medium text-red-700 dark:text-red-400">
+                      Error: {resetError}
+                    </p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Farm Settings */}
           <Card>
             <CardHeader className="pb-4">
