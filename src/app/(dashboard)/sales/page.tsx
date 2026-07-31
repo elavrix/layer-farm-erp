@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { Header } from "@/components/layout/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -8,26 +9,23 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { EggQuantityInput } from "@/components/ui/EggQuantityInput";
-import { useEggRate } from "@/hooks/useEggRate";
-import { ShoppingCart, TrendingUp, Clock, Users, X, Tag, Percent } from "lucide-react";
+import { ShoppingCart, TrendingUp, Clock, X } from "lucide-react";
 
-// ── Past sales data ──────────────────────────────────────────
-const sales = [
-  { invoice: "INV-2026-087", date: "2026-07-31", customer: "Ali Traders",        trays: 40,  rate: 1050, discount: 0,    amount: 42000,   payment: "Cash",          status: "paid" },
-  { invoice: "INV-2026-086", date: "2026-07-31", customer: "Bismillah Mart",      trays: 60,  rate: 1050, discount: 1500, amount: 61500,   payment: "Credit",        status: "pending" },
-  { invoice: "INV-2026-085", date: "2026-07-30", customer: "Rehman Grocery",      trays: 120, rate: 1040, discount: 0,    amount: 124800,  payment: "Bank Transfer", status: "paid" },
-  { invoice: "INV-2026-084", date: "2026-07-29", customer: "City Superstore",     trays: 200, rate: 1035, discount: 5000, amount: 202000,  payment: "Cheque",        status: "paid" },
-  { invoice: "INV-2026-083", date: "2026-07-28", customer: "Khan Poultry Supply", trays: 150, rate: 1040, discount: 0,    amount: 156000,  payment: "Credit",        status: "overdue" },
-];
+// Today's ISO date (YYYY-MM-DD)
+function todayISO() {
+  return new Date().toISOString().split("T")[0];
+}
 
-function trayLabel(trays: number) {
-  const p = Math.floor(trays / 12);
-  const t = trays % 12;
-  const parts = [];
-  if (p) parts.push(`${p} patti`);
-  if (t) parts.push(`${t} tray`);
-  return parts.join(" + ") || "0";
+interface Sale {
+  id: string;
+  customer_name: string;
+  sale_date: string;
+  trays: number;
+  rate_per_tray: number;
+  gross_amount: number;
+  net_amount: number;
+  payment_status: string;
+  notes: string | null;
 }
 
 const statusStyle: Record<string, string> = {
@@ -37,36 +35,123 @@ const statusStyle: Record<string, string> = {
 };
 
 export default function SalesPage() {
-  const { current: todayRate, perEgg, perPatti, loaded } = useEggRate();
+  const supabase = createClient();
 
+  // ── data ──────────────────────────────────────────────────────
+  const [sales,       setSales]       = useState<Sale[]>([]);
+  const [latestRate,  setLatestRate]  = useState<number | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [saving,      setSaving]      = useState(false);
+  const [saved,       setSaved]       = useState(false);
+  const [error,       setError]       = useState<string | null>(null);
+
+  // ── form visibility ───────────────────────────────────────────
   const [showForm, setShowForm] = useState(false);
-  const [payment,  setPayment]  = useState("cash");
-  const [saleQty,  setSaleQty]  = useState({ pattis: 0, trays: 0, loose: 0, totalEggs: 0, totalTrays: 0 });
 
-  // Rate fields — pre-filled with today's rate
-  const [ratePerTray, setRatePerTray]   = useState("");
-  const [discountAmt, setDiscountAmt]   = useState("");
-  const [discountType, setDiscountType] = useState<"fixed" | "percent">("fixed");
-  const [transport,   setTransport]     = useState("");
-  const [saved,       setSaved]         = useState(false);
+  // ── form fields ───────────────────────────────────────────────
+  const [customerName,   setCustomerName]   = useState("");
+  const [saleDate,       setSaleDate]       = useState(todayISO());
+  const [trays,          setTrays]          = useState("");
+  const [ratePerTray,    setRatePerTray]    = useState("");
+  const [paymentStatus,  setPaymentStatus]  = useState("pending");
+  const [notes,          setNotes]          = useState("");
 
-  // Pre-fill rate when today's rate loads or form opens
-  useEffect(() => {
-    if (todayRate) setRatePerTray(String(todayRate.rate));
-  }, [todayRate, showForm]);
-
+  // ── live calc ─────────────────────────────────────────────────
   const rate      = parseFloat(ratePerTray) || 0;
-  const gross     = +(saleQty.totalTrays * rate).toFixed(0);
-  const disc      = discountType === "percent"
-    ? +(gross * (parseFloat(discountAmt) || 0) / 100).toFixed(0)
-    : parseFloat(discountAmt) || 0;
-  const transport_ = parseFloat(transport) || 0;
-  const netAmount = gross - disc + transport_;
-  const isDiscounted = rate < (todayRate?.rate ?? 0);
+  const traysNum  = parseFloat(trays) || 0;
+  const gross     = +(traysNum * rate).toFixed(0);
+  const netAmount = gross;
 
-  function handleSave() {
+  // ── derived stats ─────────────────────────────────────────────
+  const todaySalesCount = sales.filter((s) => s.sale_date === todayISO()).length;
+  const totalRevenue    = sales.reduce((sum, s) => sum + s.net_amount, 0);
+  const pendingAmount   = sales
+    .filter((s) => s.payment_status === "pending" || s.payment_status === "overdue")
+    .reduce((sum, s) => sum + s.net_amount, 0);
+
+  // ── fetch latest egg rate once ────────────────────────────────
+  useEffect(() => {
+    supabase
+      .from("egg_rates")
+      .select("rate")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          const r = Number(data.rate);
+          setLatestRate(r);
+          setRatePerTray(String(r));
+        }
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── pre-fill rate when form opens ─────────────────────────────
+  useEffect(() => {
+    if (showForm && latestRate !== null) {
+      setRatePerTray(String(latestRate));
+    }
+  }, [showForm, latestRate]);
+
+  // ── fetch today's sales ───────────────────────────────────────
+  const fetchSales = useCallback(async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("sales")
+      .select("id, customer_name, sale_date, trays, rate_per_tray, gross_amount, net_amount, payment_status, notes")
+      .eq("sale_date", todayISO())
+      .order("created_at", { ascending: false });
+
+    if (error) { setError(error.message); setLoading(false); return; }
+    setSales(data ?? []);
+    setLoading(false);
+  }, [supabase]);
+
+  useEffect(() => { fetchSales(); }, [fetchSales]);
+
+  // ── submit ────────────────────────────────────────────────────
+  async function handleSave() {
+    if (!customerName.trim()) { setError("Customer name is required."); return; }
+    if (traysNum <= 0)        { setError("Quantity must be greater than 0."); return; }
+    if (rate <= 0)            { setError("Rate must be greater than 0."); return; }
+
+    setSaving(true);
+    setError(null);
+
+    const { error } = await supabase.from("sales").insert({
+      customer_name:  customerName.trim(),
+      sale_date:      saleDate,
+      trays:          traysNum,
+      rate_per_tray:  rate,
+      gross_amount:   gross,
+      net_amount:     netAmount,
+      payment_status: paymentStatus,
+      notes:          notes.trim() || null,
+    });
+
+    setSaving(false);
+    if (error) { setError(error.message); return; }
+
     setSaved(true);
+    // reset form
+    setCustomerName("");
+    setTrays("");
+    setNotes("");
+    setPaymentStatus("pending");
+    if (latestRate !== null) setRatePerTray(String(latestRate));
     setTimeout(() => { setSaved(false); setShowForm(false); }, 1800);
+    await fetchSales();
+  }
+
+  // ── mark as paid ──────────────────────────────────────────────
+  async function markPaid(id: string) {
+    const { error } = await supabase
+      .from("sales")
+      .update({ payment_status: "paid" })
+      .eq("id", id);
+    if (error) { setError(error.message); return; }
+    await fetchSales();
   }
 
   return (
@@ -74,217 +159,191 @@ export default function SalesPage() {
       <Header title="Sales" />
       <main className="flex-1 overflow-y-auto p-6 space-y-5">
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[
-            { label: "Today's Sales",      value: "2",            icon: ShoppingCart, color: "text-blue-500" },
-            { label: "This Month Revenue", value: "₨ 8,40,000",  icon: TrendingUp,   color: "text-emerald-500" },
-            { label: "Pending Payments",   value: "₨ 1,20,000",  icon: Clock,        color: "text-yellow-500" },
-            { label: "Total Customers",    value: "14",           icon: Users,        color: "text-purple-500" },
-          ].map((s) => (
-            <Card key={s.label}>
-              <CardContent className="p-4 flex items-center gap-3">
-                <s.icon className={`h-5 w-5 shrink-0 ${s.color}`} />
-                <div>
-                  <p className="text-xs text-muted-foreground">{s.label}</p>
-                  <p className={`text-xl font-bold mt-0.5 ${s.color}`}>{s.value}</p>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        {/* Today's rate info bar */}
-        {loaded && todayRate && (
-          <div className="flex items-center gap-3 rounded-xl bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-400/30 px-4 py-2.5">
-            <span className="text-lg">🥚</span>
-            <div className="flex items-baseline gap-2 flex-1">
-              <span className="text-xs text-yellow-700 dark:text-yellow-400 font-semibold">Today's Market Rate:</span>
-              <span className="text-base font-black text-yellow-700 dark:text-yellow-300">₨{todayRate.rate.toLocaleString()}/tray</span>
-              <span className="text-xs text-yellow-600/70 dark:text-yellow-500/70 font-mono">
-                · ₨{perEgg}/egg · ₨{perPatti.toLocaleString()}/patti
-              </span>
-            </div>
-            <span className="text-[10px] text-yellow-600/60 dark:text-yellow-500/60">
-              by {todayRate.updatedBy}
-            </span>
-            <button
-              onClick={() => setShowForm(true)}
-              className="ml-auto flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              + New Sale
-            </button>
+        {error && (
+          <div className="rounded-md bg-red-500/10 border border-red-500/20 px-4 py-2 text-xs text-red-400">
+            {error}
           </div>
         )}
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+          <Card>
+            <CardContent className="p-4 flex items-center gap-3">
+              <ShoppingCart className="h-5 w-5 shrink-0 text-blue-500" />
+              <div>
+                <p className="text-xs text-muted-foreground">Today&apos;s Sales</p>
+                <p className="text-xl font-bold mt-0.5 text-blue-500">{todaySalesCount}</p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 flex items-center gap-3">
+              <TrendingUp className="h-5 w-5 shrink-0 text-emerald-500" />
+              <div>
+                <p className="text-xs text-muted-foreground">Today&apos;s Revenue</p>
+                <p className="text-xl font-bold mt-0.5 text-emerald-500">
+                  ₨ {totalRevenue.toLocaleString()}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 flex items-center gap-3">
+              <Clock className="h-5 w-5 shrink-0 text-yellow-500" />
+              <div>
+                <p className="text-xs text-muted-foreground">Pending Payments</p>
+                <p className="text-xl font-bold mt-0.5 text-yellow-500">
+                  ₨ {pendingAmount.toLocaleString()}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Rate info bar + New Sale button */}
+        <div className="flex items-center gap-3 rounded-xl bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-400/30 px-4 py-2.5">
+          <span className="text-lg">🥚</span>
+          <div className="flex items-baseline gap-2 flex-1">
+            <span className="text-xs text-yellow-700 dark:text-yellow-400 font-semibold">Current Market Rate:</span>
+            {latestRate !== null ? (
+              <>
+                <span className="text-base font-black text-yellow-700 dark:text-yellow-300">
+                  ₨{latestRate.toLocaleString()}/tray
+                </span>
+                <span className="text-xs text-yellow-600/70 dark:text-yellow-500/70 font-mono">
+                  · ₨{(latestRate / 30).toFixed(2)}/egg · ₨{(latestRate * 12).toLocaleString()}/patti
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-yellow-600/60">Loading…</span>
+            )}
+          </div>
+          <button
+            onClick={() => setShowForm(true)}
+            className="ml-auto flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            + New Sale
+          </button>
+        </div>
 
         {/* New Sale Form */}
         {showForm && (
           <Card className="border-primary/40">
             <CardHeader className="pb-3 flex flex-row items-center justify-between">
               <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <ShoppingCart className="h-4 w-4 text-primary" /> New Sale Invoice
+                <ShoppingCart className="h-4 w-4 text-primary" /> New Sale
               </CardTitle>
               <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground">
                 <X className="h-4 w-4" />
               </button>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="space-y-4">
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Date</Label>
-                  <Input type="date" defaultValue="2026-07-31" className="h-8 text-xs" />
+                  <Input
+                    type="date"
+                    value={saleDate}
+                    onChange={(e) => setSaleDate(e.target.value)}
+                    className="h-8 text-xs"
+                  />
                 </div>
-                <div className="space-y-1.5">
+                <div className="space-y-1.5 sm:col-span-2">
                   <Label className="text-xs">Customer Name</Label>
-                  <Input type="text" placeholder="Customer name" className="h-8 text-xs" />
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Farm</Label>
-                  <Select defaultValue="green-valley">
-                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="green-valley">Green Valley Farm</SelectItem>
-                      <SelectItem value="sunrise">Sunrise Poultry</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              {/* Egg quantity */}
-              <EggQuantityInput label="Sale Quantity" onChange={setSaleQty} />
-
-              {/* Rate + Discount row */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-
-                {/* Rate per tray */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs flex items-center gap-1.5">
-                    <Tag className="h-3 w-3" /> Rate per Tray (₨)
-                  </Label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={ratePerTray}
-                      onChange={(e) => setRatePerTray(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-ring"
-                    />
-                    {todayRate && rate !== todayRate.rate && (
-                      <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                        rate < todayRate.rate
-                          ? "bg-orange-100 dark:bg-orange-900/40 text-orange-600 dark:text-orange-400"
-                          : "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400"
-                      }`}>
-                        {rate < todayRate.rate ? `↓ ₨${todayRate.rate - rate} below` : `↑ ₨${rate - todayRate.rate} above`}
-                      </span>
-                    )}
-                    {todayRate && rate === todayRate.rate && (
-                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] bg-yellow-100 dark:bg-yellow-900/40 text-yellow-600 dark:text-yellow-400 px-1.5 py-0.5 rounded font-semibold">
-                        Market rate
-                      </span>
-                    )}
-                  </div>
-                  {ratePerTray && (
-                    <p className="text-[10px] text-muted-foreground font-mono">
-                      = ₨{(rate/30).toFixed(2)}/egg · ₨{(rate*12).toLocaleString()}/patti
-                    </p>
-                  )}
-                </div>
-
-                {/* Discount */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs flex items-center gap-1.5">
-                    <Percent className="h-3 w-3" /> Discount
-                  </Label>
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      value={discountAmt}
-                      onChange={(e) => setDiscountAmt(e.target.value)}
-                      placeholder="0"
-                      className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                    />
-                    <select
-                      value={discountType}
-                      onChange={(e) => setDiscountType(e.target.value as "fixed" | "percent")}
-                      className="rounded-md border border-input bg-background px-2 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                    >
-                      <option value="fixed">₨ Fixed</option>
-                      <option value="percent">% Percent</option>
-                    </select>
-                  </div>
-                  {disc > 0 && (
-                    <p className="text-[10px] text-orange-500 font-mono">- ₨{disc.toLocaleString()} discount</p>
-                  )}
-                </div>
-
-                {/* Transport */}
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Transport Cost (₨)</Label>
-                  <input
-                    type="number"
-                    value={transport}
-                    onChange={(e) => setTransport(e.target.value)}
-                    placeholder="0"
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  <Input
+                    type="text"
+                    placeholder="Customer name"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className="h-8 text-xs"
                   />
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Quantity (trays)</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={trays}
+                    onChange={(e) => setTrays(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Rate per Tray (₨)</Label>
+                  <Input
+                    type="number"
+                    value={ratePerTray}
+                    onChange={(e) => setRatePerTray(e.target.value)}
+                    className="h-8 text-xs font-bold"
+                  />
+                  {latestRate !== null && rate !== latestRate && rate > 0 && (
+                    <p className={`text-[10px] font-semibold ${rate < latestRate ? "text-orange-500" : "text-emerald-500"}`}>
+                      {rate < latestRate
+                        ? `↓ ₨${latestRate - rate} below market`
+                        : `↑ ₨${rate - latestRate} above market`}
+                    </p>
+                  )}
+                </div>
+              </div>
+
               {/* Live invoice summary */}
-              {saleQty.totalTrays > 0 && rate > 0 && (
+              {traysNum > 0 && rate > 0 && (
                 <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2">
                   <p className="text-xs font-bold text-muted-foreground uppercase tracking-wide">Invoice Summary</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                  <div className="grid grid-cols-3 gap-3 text-center">
                     <div>
                       <p className="text-[10px] text-muted-foreground">Trays</p>
-                      <p className="font-bold text-sm">{saleQty.totalTrays.toFixed(1)}</p>
+                      <p className="font-bold text-sm">{traysNum}</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">Gross (₨)</p>
                       <p className="font-bold text-sm">{gross.toLocaleString()}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-muted-foreground">Discount (₨)</p>
-                      <p className={`font-bold text-sm ${disc > 0 ? "text-orange-500" : "text-muted-foreground"}`}>
-                        {disc > 0 ? `- ${disc.toLocaleString()}` : "—"}
-                      </p>
                     </div>
                     <div className="bg-primary/10 rounded-lg p-2">
                       <p className="text-[10px] text-muted-foreground">Net Amount (₨)</p>
                       <p className="font-black text-base text-primary">{netAmount.toLocaleString()}</p>
                     </div>
                   </div>
-                  {isDiscounted && (
-                    <p className="text-[10px] text-orange-500 flex items-center gap-1">
-                      ⚠ Selling below today's market rate (₨{todayRate?.rate}/tray). Discount: ₨{((todayRate?.rate ?? 0) - rate) * saleQty.totalTrays} total.
-                    </p>
-                  )}
                 </div>
               )}
 
-              <div className="space-y-1.5">
-                <Label className="text-xs">Payment Mode</Label>
-                <Select value={payment} onValueChange={(v) => v && setPayment(v)}>
-                  <SelectTrigger className="h-8 text-xs w-48"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="credit">Credit</SelectItem>
-                    <SelectItem value="bank">Bank Transfer</SelectItem>
-                    <SelectItem value="cheque">Cheque</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Payment Status</Label>
+                  <Select value={paymentStatus} onValueChange={(v) => v && setPaymentStatus(v)}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Notes</Label>
+                  <Input
+                    type="text"
+                    placeholder="Optional notes"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    className="h-8 text-xs"
+                  />
+                </div>
               </div>
 
               <button
                 onClick={handleSave}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors ${
+                disabled={saving}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-5 py-2.5 text-sm font-bold transition-colors disabled:opacity-50 ${
                   saved
                     ? "bg-emerald-600 text-white"
                     : "bg-primary text-primary-foreground hover:bg-primary/90"
                 }`}
               >
-                {saved ? "✓ Invoice Created!" : "Create Invoice"}
+                {saving ? "Saving…" : saved ? "✓ Saved!" : "Create Sale"}
               </button>
             </CardContent>
           </Card>
@@ -293,7 +352,7 @@ export default function SalesPage() {
         {/* Sales Table */}
         <Card>
           <CardHeader className="pb-2 flex flex-row items-center justify-between">
-            <CardTitle className="text-sm font-semibold">Sales Invoices</CardTitle>
+            <CardTitle className="text-sm font-semibold">Today&apos;s Sales</CardTitle>
             {!showForm && (
               <button
                 onClick={() => setShowForm(true)}
@@ -304,54 +363,54 @@ export default function SalesPage() {
             )}
           </CardHeader>
           <CardContent className="p-0 overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Invoice #</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Quantity</TableHead>
-                  <TableHead className="text-right">Trays</TableHead>
-                  <TableHead className="text-right">Rate (₨)</TableHead>
-                  <TableHead className="text-right">Discount</TableHead>
-                  <TableHead className="text-right">Amount (₨)</TableHead>
-                  <TableHead>Payment</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sales.map((s) => {
-                  const belowMarket = todayRate && s.rate < todayRate.rate;
-                  return (
-                    <TableRow key={s.invoice}>
-                      <TableCell className="font-mono text-xs font-semibold">{s.invoice}</TableCell>
-                      <TableCell className="text-xs">{s.date}</TableCell>
-                      <TableCell className="text-xs font-medium">{s.customer}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{trayLabel(s.trays)}</TableCell>
+            {loading ? (
+              <p className="text-xs text-muted-foreground px-4 py-6 text-center">Loading…</p>
+            ) : sales.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-4 py-6 text-center">No sales recorded today.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Customer</TableHead>
+                    <TableHead className="text-right">Trays</TableHead>
+                    <TableHead className="text-right">Rate (₨)</TableHead>
+                    <TableHead className="text-right">Amount (₨)</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Notes</TableHead>
+                    <TableHead></TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sales.map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell className="text-xs font-medium">{s.customer_name}</TableCell>
                       <TableCell className="text-right text-xs font-mono">{s.trays}</TableCell>
-                      <TableCell className="text-right text-xs">
-                        <span className={belowMarket ? "text-orange-500" : ""}>
-                          ₨{s.rate.toLocaleString()}
-                        </span>
-                        {belowMarket && (
-                          <span className="ml-1 text-[9px] bg-orange-100 dark:bg-orange-900/40 text-orange-500 px-1 rounded">disc</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right text-xs text-orange-500">
-                        {s.discount > 0 ? `₨${s.discount.toLocaleString()}` : "—"}
-                      </TableCell>
-                      <TableCell className="text-right text-xs font-bold">{s.amount.toLocaleString()}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{s.payment}</TableCell>
+                      <TableCell className="text-right text-xs">₨{Number(s.rate_per_tray).toLocaleString()}</TableCell>
+                      <TableCell className="text-right text-xs font-bold">₨{Number(s.net_amount).toLocaleString()}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={`text-[10px] ${statusStyle[s.status]}`}>
-                          {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] ${statusStyle[s.payment_status] ?? ""}`}
+                        >
+                          {s.payment_status.charAt(0).toUpperCase() + s.payment_status.slice(1)}
                         </Badge>
                       </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{s.notes ?? "—"}</TableCell>
+                      <TableCell>
+                        {s.payment_status !== "paid" && (
+                          <button
+                            onClick={() => markPaid(s.id)}
+                            className="text-[10px] text-emerald-500 hover:underline whitespace-nowrap font-medium"
+                          >
+                            Mark Paid
+                          </button>
+                        )}
+                      </TableCell>
                     </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
           </CardContent>
         </Card>
 
