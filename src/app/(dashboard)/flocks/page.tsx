@@ -124,10 +124,10 @@ export default function FlocksPage() {
       .order("name", { ascending: true });
 
     if (!error && data) {
-      const mapped: ShedOption[] = data.map((s: { id: string; name: string; farms: { name: string } | null }) => ({
+      const mapped: ShedOption[] = data.map((s: { id: string; name: string; farms: { name: string }[] | { name: string } | null }) => ({
         id: s.id,
         name: s.name,
-        farm_name: s.farms?.name ?? "",
+        farm_name: Array.isArray(s.farms) ? (s.farms[0]?.name ?? "") : (s.farms?.name ?? ""),
       }));
       setSheds(mapped);
     }
