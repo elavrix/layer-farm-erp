@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, Building2, Warehouse, Bird, ClipboardList,
+  LayoutDashboard, Building2, Bird, ClipboardList,
   Package, ShoppingCart, ShoppingBag, DollarSign, BarChart3,
   Bell, Users, Settings, LogOut, Egg, ChevronLeft, ChevronRight, X,
 } from "lucide-react";
@@ -13,7 +13,6 @@ import { useState } from "react";
 const navItems = [
   { title: "Dashboard",        href: "/",              icon: LayoutDashboard },
   { title: "Farms",            href: "/farms",          icon: Building2 },
-  { title: "Sheds",            href: "/sheds",          icon: Warehouse },
   { title: "Flocks",           href: "/flocks",         icon: Bird },
   { title: "Daily Operations", href: "/daily-ops",      icon: ClipboardList },
   { title: "Inventory",        href: "/inventory",      icon: Package },
