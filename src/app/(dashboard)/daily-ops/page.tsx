@@ -213,7 +213,7 @@ export default function DailyOpsPage() {
               tab === "log" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <History className="h-3.5 w-3.5" /> Entry History
+            <History className="h-3.5 w-3.5" /> Daily Reports
           </button>
         </div>
 
@@ -384,7 +384,7 @@ export default function DailyOpsPage() {
               </div>
             ) : grouped.length === 0 ? (
               <div className="rounded-xl border border-border px-6 py-10 text-center text-sm text-muted-foreground">
-                No entries found for the selected period.
+                No daily reports found for the selected period.
               </div>
             ) : (
               <div className="space-y-3">
