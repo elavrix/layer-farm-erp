@@ -4,11 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Separator } from "@/components/ui/separator";
-import { Bell, Menu, LogOut, Settings, AlertCircle, AlertTriangle, Info, X } from "lucide-react";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
-  DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Bell, Menu, LogOut, Settings, AlertCircle, AlertTriangle, Info, X, ChevronDown } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
 import { useMobileMenu } from "@/app/(dashboard)/layout";
 import { createClient } from "@/lib/supabase/client";
@@ -32,7 +28,9 @@ export function Header({ title }: HeaderProps) {
   const [initials,   setInitials]   = useState("U");
   const [notifs,     setNotifs]     = useState<NotifItem[]>([]);
   const [bellOpen,   setBellOpen]   = useState(false);
+  const [userOpen,   setUserOpen]   = useState(false);
   const bellRef = useRef<HTMLDivElement>(null);
+  const userRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
@@ -139,16 +137,15 @@ export function Header({ title }: HeaderProps) {
     load();
   }, [supabase]);
 
-  // Close bell popup on outside click
+  // Close popups on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
-      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
-        setBellOpen(false);
-      }
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) setBellOpen(false);
+      if (userRef.current && !userRef.current.contains(e.target as Node)) setUserOpen(false);
     }
-    if (bellOpen) document.addEventListener("mousedown", handleClick);
+    document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [bellOpen]);
+  }, []);
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -238,9 +235,12 @@ export function Header({ title }: HeaderProps) {
 
       <Separator orientation="vertical" className="h-5" />
 
-      {/* User menu */}
-      <DropdownMenu>
-        <DropdownMenuTrigger className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors outline-none">
+      {/* User menu popup */}
+      <div ref={userRef} className="relative">
+        <button
+          onClick={() => setUserOpen(o => !o)}
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-accent transition-colors outline-none"
+        >
           <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">
             {initials}
           </div>
@@ -248,25 +248,47 @@ export function Header({ title }: HeaderProps) {
             <span className="text-xs font-medium leading-tight truncate max-w-[100px]">{userName}</span>
             <span className="text-[10px] text-muted-foreground leading-tight capitalize">{userRole}</span>
           </div>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-44">
-          <DropdownMenuLabel className="text-xs">
-            <p className="font-semibold">{userName}</p>
-            <p className="text-muted-foreground capitalize font-normal">{userRole}</p>
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem className="gap-2 text-xs cursor-pointer" onClick={() => router.push("/settings")}>
-            <Settings className="h-3.5 w-3.5" /> Settings
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="gap-2 text-xs text-destructive focus:text-destructive cursor-pointer"
-            onClick={handleLogout}
-          >
-            <LogOut className="h-3.5 w-3.5" /> Logout
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          <ChevronDown className="h-3 w-3 text-muted-foreground hidden sm:block" />
+        </button>
+
+        {userOpen && (
+          <div className="absolute right-0 top-10 z-50 w-52 rounded-xl border border-border bg-background shadow-xl overflow-hidden">
+            {/* User info */}
+            <div className="px-4 py-3 border-b border-border bg-muted/30">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-bold shrink-0">
+                  {initials}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold truncate">{userName}</p>
+                  <p className="text-[11px] text-muted-foreground capitalize">{userRole}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Menu items */}
+            <div className="py-1">
+              <button
+                onClick={() => { setUserOpen(false); router.push("/settings"); }}
+                className="flex w-full items-center gap-3 px-4 py-2.5 text-xs text-foreground hover:bg-muted transition-colors"
+              >
+                <Settings className="h-3.5 w-3.5 text-muted-foreground" />
+                Settings
+              </button>
+            </div>
+
+            <div className="border-t border-border py-1">
+              <button
+                onClick={handleLogout}
+                className="flex w-full items-center gap-3 px-4 py-2.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Logout
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </header>
   );
 }
