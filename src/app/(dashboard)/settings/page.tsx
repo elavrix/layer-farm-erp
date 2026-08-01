@@ -118,7 +118,7 @@ export default function SettingsPage() {
   return (
     <>
       <Header title="Settings" />
-      <main className="flex-1 p-6 space-y-6">
+      <main className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Admin Tools — visible only to admins */}
           {isAdmin && (

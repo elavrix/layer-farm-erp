@@ -517,7 +517,7 @@ export default function ReportsPage() {
   return (
     <>
       <Header title="Reports" />
-      <main className="flex-1 p-6">
+      <main className="flex-1 overflow-y-auto p-6">
         <div className="flex gap-6 h-full">
           {/* Left: Report Selector */}
           <aside className="w-56 shrink-0">

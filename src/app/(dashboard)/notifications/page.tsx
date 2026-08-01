@@ -303,7 +303,7 @@ export default function NotificationsPage() {
   return (
     <>
       <Header title="Notifications" />
-      <main className="flex-1 p-6 space-y-5">
+      <main className="flex-1 overflow-y-auto p-6 space-y-5">
         {/* Top bar */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
