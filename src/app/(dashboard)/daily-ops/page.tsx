@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Header } from "@/components/layout/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -64,8 +65,9 @@ function groupByDate(entries: DailyEntry[]) {
   return Object.entries(map).sort(([a], [b]) => b.localeCompare(a));
 }
 
-export default function DailyOpsPage() {
+function DailyOpsInner() {
   const supabase = createClient();
+  const searchParams = useSearchParams();
 
   // ── shared data ───────────────────────────────────────────────
   const [sheds,   setSheds]   = useState<Shed[]>([]);
@@ -73,8 +75,10 @@ export default function DailyOpsPage() {
   const [saved,   setSaved]   = useState(false);
   const [error,   setError]   = useState<string | null>(null);
 
-  // ── tabs ──────────────────────────────────────────────────────
-  const [tab, setTab] = useState<"entry" | "log">("entry");
+  // ── tabs — default to "log" if ?tab=log in URL ───────────────
+  const [tab, setTab] = useState<"entry" | "log">(
+    searchParams.get("tab") === "log" ? "log" : "entry"
+  );
 
   // ── entry form ────────────────────────────────────────────────
   const [shedId,    setShedId]    = useState("");
@@ -492,5 +496,13 @@ export default function DailyOpsPage() {
 
       </main>
     </>
+  );
+}
+
+export default function DailyOpsPage() {
+  return (
+    <Suspense>
+      <DailyOpsInner />
+    </Suspense>
   );
 }
