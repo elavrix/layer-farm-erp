@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Separator } from "@/components/ui/separator";
-import { Bell, Menu, LogOut, Settings, User } from "lucide-react";
+import { Bell, Menu, LogOut, Settings, AlertCircle, AlertTriangle, Info, X } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -15,19 +15,28 @@ import { createClient } from "@/lib/supabase/client";
 
 interface HeaderProps { title: string }
 
+interface NotifItem {
+  id: string;
+  level: "alert" | "warning" | "info";
+  title: string;
+  description: string;
+}
+
 export function Header({ title }: HeaderProps) {
   const openMenu = useMobileMenu();
   const router   = useRouter();
   const supabase = createClient();
 
-  const [userName,  setUserName]  = useState("User");
-  const [userRole,  setUserRole]  = useState("");
-  const [initials,  setInitials]  = useState("U");
-  const [alertCount, setAlertCount] = useState(0);
+  const [userName,   setUserName]   = useState("User");
+  const [userRole,   setUserRole]   = useState("");
+  const [initials,   setInitials]   = useState("U");
+  const [notifs,     setNotifs]     = useState<NotifItem[]>([]);
+  const [bellOpen,   setBellOpen]   = useState(false);
+  const bellRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function load() {
-      // ── Current user ─────────────────────────────────────
+      // ── Current user ──────────────────────────────────────
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
@@ -41,43 +50,116 @@ export function Header({ title }: HeaderProps) {
       const role = profile?.role || "";
       setUserName(name);
       setUserRole(role);
-      setInitials(
-        name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2)
-      );
+      setInitials(name.split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 2));
 
-      // ── Real alert count ──────────────────────────────────
+      // ── Build notifications ───────────────────────────────
+      const today    = new Date().toISOString().split("T")[0];
+      const in30days = new Date(Date.now() + 30 * 86400000).toISOString().split("T")[0];
+      const list: NotifItem[] = [];
+
       // 1. Low feed stock
       const { data: feedItems } = await supabase
         .from("inventory_feed")
-        .select("stock, reorder_level")
+        .select("name, stock, reorder_level")
         .gt("reorder_level", 0);
-      const lowFeed = (feedItems ?? []).filter(f => f.stock <= f.reorder_level).length;
+      (feedItems ?? []).filter(f => f.stock <= f.reorder_level).forEach(f => {
+        list.push({
+          id: `feed-${f.name}`,
+          level: "warning",
+          title: "Low Feed Stock",
+          description: `${f.name} — only ${f.stock} left (reorder at ${f.reorder_level})`,
+        });
+      });
 
-      // 2. Expired or expiring medicine
-      const today    = new Date().toISOString().split("T")[0];
-      const in30days = new Date(Date.now() + 30 * 86400000).toISOString().split("T")[0];
-      const { count: medCount } = await supabase
+      // 2. Expired medicine
+      const { data: expired } = await supabase
         .from("inventory_medicine")
-        .select("id", { count: "exact", head: true })
-        .lte("expiry_date", in30days);
+        .select("name, expiry_date")
+        .lt("expiry_date", today);
+      (expired ?? []).forEach(m => {
+        list.push({
+          id: `exp-${m.name}`,
+          level: "alert",
+          title: "Medicine Expired",
+          description: `${m.name} expired on ${m.expiry_date}`,
+        });
+      });
 
-      // 3. High mortality today
-      const { data: todayEntries } = await supabase
+      // 3. Expiring soon (within 30 days)
+      const { data: expiring } = await supabase
+        .from("inventory_medicine")
+        .select("name, expiry_date")
+        .gte("expiry_date", today)
+        .lte("expiry_date", in30days);
+      (expiring ?? []).forEach(m => {
+        const days = Math.round((new Date(m.expiry_date).getTime() - Date.now()) / 86400000);
+        list.push({
+          id: `soon-${m.name}`,
+          level: "warning",
+          title: "Medicine Expiring Soon",
+          description: `${m.name} expires in ${days} day${days !== 1 ? "s" : ""}`,
+        });
+      });
+
+      // 4. High mortality today
+      const { data: mortality } = await supabase
         .from("daily_entries")
-        .select("mortality")
+        .select("mortality, sheds(name)")
         .eq("entry_date", today)
         .gte("mortality", 5);
+      (mortality ?? []).forEach((e) => {
+        const shed = (e.sheds as unknown as { name: string } | null)?.name ?? "a shed";
+        list.push({
+          id: `mort-${shed}`,
+          level: "alert",
+          title: "High Mortality",
+          description: `${e.mortality} birds died in ${shed} today`,
+        });
+      });
 
-      const total = lowFeed + (medCount ?? 0) + (todayEntries?.length ?? 0);
-      setAlertCount(total);
+      // 5. Pending payments older than 7 days
+      const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0];
+      const { data: overdue } = await supabase
+        .from("sales")
+        .select("customer_name, net_amount, sale_date")
+        .eq("payment_status", "pending")
+        .lte("sale_date", cutoff)
+        .limit(3);
+      (overdue ?? []).forEach(s => {
+        list.push({
+          id: `pay-${s.customer_name}-${s.sale_date}`,
+          level: "info",
+          title: "Overdue Payment",
+          description: `${s.customer_name} — ₨${Number(s.net_amount).toLocaleString()} pending since ${s.sale_date}`,
+        });
+      });
+
+      setNotifs(list);
     }
     load();
   }, [supabase]);
+
+  // Close bell popup on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (bellRef.current && !bellRef.current.contains(e.target as Node)) {
+        setBellOpen(false);
+      }
+    }
+    if (bellOpen) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [bellOpen]);
 
   async function handleLogout() {
     await supabase.auth.signOut();
     router.push("/login");
   }
+
+  const levelIcon = (level: NotifItem["level"]) => {
+    if (level === "alert")   return <AlertCircle   className="h-4 w-4 shrink-0 text-red-500" />;
+    if (level === "warning") return <AlertTriangle  className="h-4 w-4 shrink-0 text-yellow-500" />;
+    return                          <Info           className="h-4 w-4 shrink-0 text-blue-500" />;
+  };
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-4">
@@ -95,15 +177,64 @@ export function Header({ title }: HeaderProps) {
       {/* Dark mode toggle */}
       <ThemeToggle />
 
-      {/* Notifications bell — links to /notifications */}
-      <Link href="/notifications" className="relative flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">
-        <Bell className="h-4 w-4" />
-        {alertCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white pointer-events-none">
-            {alertCount > 9 ? "9+" : alertCount}
-          </span>
+      {/* ── Notification Bell popup ── */}
+      <div ref={bellRef} className="relative">
+        <button
+          onClick={() => setBellOpen(o => !o)}
+          className="relative flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+        >
+          <Bell className="h-4 w-4" />
+          {notifs.length > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white pointer-events-none">
+              {notifs.length > 9 ? "9+" : notifs.length}
+            </span>
+          )}
+        </button>
+
+        {/* Popup panel */}
+        {bellOpen && (
+          <div className="absolute right-0 top-10 z-50 w-80 rounded-xl border border-border bg-background shadow-xl overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <span className="text-sm font-semibold">Notifications</span>
+              <button onClick={() => setBellOpen(false)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* List */}
+            <div className="max-h-80 overflow-y-auto divide-y divide-border">
+              {notifs.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
+                  <Bell className="h-6 w-6 opacity-30" />
+                  <p className="text-xs">All clear — no alerts</p>
+                </div>
+              ) : (
+                notifs.map(n => (
+                  <div key={n.id} className="flex items-start gap-3 px-4 py-3 hover:bg-muted/50 transition-colors">
+                    {levelIcon(n.level)}
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-foreground leading-snug">{n.title}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">{n.description}</p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Footer — View All */}
+            <div className="border-t border-border">
+              <Link
+                href="/notifications"
+                onClick={() => setBellOpen(false)}
+                className="flex items-center justify-center w-full py-2.5 text-xs font-medium text-primary hover:bg-muted transition-colors"
+              >
+                View all notifications →
+              </Link>
+            </div>
+          </div>
         )}
-      </Link>
+      </div>
 
       <Separator orientation="vertical" className="h-5" />
 
