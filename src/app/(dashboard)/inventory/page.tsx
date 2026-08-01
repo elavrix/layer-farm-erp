@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import Image from "next/image";
 import { Package, Wheat, FlaskConical, Plus, X, Check, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -16,6 +17,13 @@ interface FeedItem {
 interface MedItem {
   id: string; name: string; qty: string; expiry: string;
 }
+interface ShedEggRow {
+  shed: string;
+  collected: number;
+  broken: number;
+  dirty: number;
+  goodEggs: number;
+}
 
 function medStatus(expiry: string) {
   const days = Math.round((new Date(expiry).getTime() - Date.now()) / 86400000);
@@ -24,12 +32,12 @@ function medStatus(expiry: string) {
   return "ok";
 }
 
-type Tab = "feed" | "medicine";
+type Tab = "eggs" | "feed" | "medicine";
 
 export default function InventoryPage() {
   const supabase = createClient();
 
-  const [tab, setTab] = useState<Tab>("feed"); // feed | medicine only — eggs tracked in Daily Operations
+  const [tab, setTab] = useState<Tab>("eggs");
   const [loading, setLoading] = useState(true);
 
   // Feed state
@@ -42,7 +50,39 @@ export default function InventoryPage() {
   const [showAddMed, setShowAddMed] = useState(false);
   const [newMed, setNewMed] = useState({ name: "", qty: "", expiry: "" });
 
+  // Egg stock state
+  const [shedRows, setShedRows]     = useState<ShedEggRow[]>([]);
+  const [totalSold, setTotalSold]   = useState(0);
+
   // ─── Fetch helpers ────────────────────────────────────────
+
+  const fetchEggs = useCallback(async () => {
+    // All-time good eggs per shed
+    const { data: entries } = await supabase
+      .from("daily_entries")
+      .select("shed_id, eggs_collected, eggs_broken, eggs_dirty, sheds(name)");
+
+    // All-time eggs sold (trays × 30)
+    const { data: salesData } = await supabase
+      .from("sales")
+      .select("trays");
+
+    const sold = (salesData ?? []).reduce((s, r) => s + (r.trays ?? 0) * 30, 0);
+    setTotalSold(sold);
+
+    // Group by shed
+    const map: Record<string, ShedEggRow> = {};
+    for (const e of entries ?? []) {
+      const shedName = (e.sheds as unknown as { name: string } | null)?.name ?? "Unknown";
+      if (!map[shedName]) map[shedName] = { shed: shedName, collected: 0, broken: 0, dirty: 0, goodEggs: 0 };
+      map[shedName].collected += e.eggs_collected ?? 0;
+      map[shedName].broken    += e.eggs_broken   ?? 0;
+      map[shedName].dirty     += e.eggs_dirty    ?? 0;
+    }
+    Object.values(map).forEach(r => { r.goodEggs = r.collected - r.broken - r.dirty; });
+    setShedRows(Object.values(map).sort((a, b) => a.shed.localeCompare(b.shed)));
+  }, [supabase]);
+
   const fetchFeed = useCallback(async () => {
     const { data } = await supabase
       .from("inventory_feed")
@@ -84,11 +124,11 @@ export default function InventoryPage() {
   useEffect(() => {
     async function load() {
       setLoading(true);
-      await Promise.all([fetchFeed(), fetchMeds()]);
+      await Promise.all([fetchEggs(), fetchFeed(), fetchMeds()]);
       setLoading(false);
     }
     load();
-  }, [fetchFeed, fetchMeds]);
+  }, [fetchEggs, fetchFeed, fetchMeds]);
 
   // ─── CRUD ─────────────────────────────────────────────────
   async function addFeed() {
@@ -141,6 +181,7 @@ export default function InventoryPage() {
 
         {/* Tab Bar */}
         <div className="flex items-center gap-2 border-b border-border pb-3 flex-wrap">
+          <button className={tabCls("eggs")}     onClick={() => setTab("eggs")}>🥚 Egg Stock</button>
           <button className={tabCls("feed")}     onClick={() => setTab("feed")}>🌾 Feed</button>
           <button className={tabCls("medicine")} onClick={() => setTab("medicine")}>💊 Medicine</button>
         </div>
@@ -152,6 +193,111 @@ export default function InventoryPage() {
 
         {!loading && (
           <>
+            {/* ══ EGGS ══ */}
+            {tab === "eggs" && (() => {
+              const totalGood  = shedRows.reduce((s, r) => s + r.goodEggs, 0);
+              const inStock    = Math.max(0, totalGood - totalSold);
+              const inTrays    = Math.floor(inStock / 30);
+              const inPattis   = Math.floor(inStock / 360);
+              const loose      = inStock % 30;
+              const eggRate    = inTrays; // display trays as primary unit
+
+              return (
+                <div className="space-y-4">
+                  {/* Stock summary banner */}
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 flex flex-wrap gap-6 items-center">
+                    <div className="flex items-center gap-3">
+                      <Image src="/eggs.png" alt="eggs" width={48} height={48} className="object-contain" />
+                      <div>
+                        <p className="text-xs text-muted-foreground">Current Egg Stock</p>
+                        <p className="text-3xl font-bold">{inStock.toLocaleString()} <span className="text-base font-normal text-muted-foreground">eggs</span></p>
+                      </div>
+                    </div>
+                    <div className="flex gap-6 flex-wrap text-sm">
+                      <div><p className="text-xs text-muted-foreground">Patties</p><p className="text-xl font-bold">{inPattis.toLocaleString()}</p></div>
+                      <div><p className="text-xs text-muted-foreground">Trays</p><p className="text-xl font-bold">{inTrays.toLocaleString()}</p></div>
+                      <div><p className="text-xs text-muted-foreground">Loose eggs</p><p className="text-xl font-bold">{loose}</p></div>
+                    </div>
+                  </div>
+
+                  {/* How it's calculated */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <Card>
+                      <CardContent className="p-4 flex items-center gap-3">
+                        <Image src="/eggs.png" alt="" width={32} height={32} className="object-contain shrink-0" />
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Total Collected (good)</p>
+                          <p className="text-lg font-bold">{totalGood.toLocaleString()}</p>
+                          <p className="text-[10px] text-muted-foreground">all time, excl. broken & dirty</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card>
+                      <CardContent className="p-4 flex items-center gap-3">
+                        <Image src="/broken-egg.png" alt="" width={32} height={32} className="object-contain shrink-0" />
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">Total Sold</p>
+                          <p className="text-lg font-bold">{totalSold.toLocaleString()}</p>
+                          <p className="text-[10px] text-muted-foreground">all time, from sales records</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <Card className="border-primary/30">
+                      <CardContent className="p-4 flex items-center gap-3">
+                        <Image src="/eggs.png" alt="" width={32} height={32} className="object-contain shrink-0" />
+                        <div>
+                          <p className="text-[10px] text-muted-foreground">In Storage Now</p>
+                          <p className="text-lg font-bold text-primary">{inStock.toLocaleString()}</p>
+                          <p className="text-[10px] text-muted-foreground">collected − sold</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Per-shed breakdown */}
+                  {shedRows.length > 0 && (
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">Production by Shed (all time)</CardTitle>
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Shed</TableHead>
+                              <TableHead className="text-right">Collected</TableHead>
+                              <TableHead className="text-right">Broken</TableHead>
+                              <TableHead className="text-right">Dirty</TableHead>
+                              <TableHead className="text-right">Good Eggs</TableHead>
+                              <TableHead className="text-right">Trays</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {shedRows.map(r => (
+                              <TableRow key={r.shed}>
+                                <TableCell className="font-medium text-xs">{r.shed}</TableCell>
+                                <TableCell className="text-right text-xs">{r.collected.toLocaleString()}</TableCell>
+                                <TableCell className="text-right text-xs text-red-500">{r.broken.toLocaleString()}</TableCell>
+                                <TableCell className="text-right text-xs text-amber-500">{r.dirty.toLocaleString()}</TableCell>
+                                <TableCell className="text-right text-xs font-semibold">{r.goodEggs.toLocaleString()}</TableCell>
+                                <TableCell className="text-right text-xs font-bold">{Math.floor(r.goodEggs / 30).toLocaleString()}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {shedRows.length === 0 && (
+                    <div className="text-center py-12 text-muted-foreground text-sm">
+                      No egg data yet. Enter daily collections in <a href="/daily-ops" className="text-primary underline">Daily Operations</a>.
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* ══ FEED ══ */}
             {tab === "feed" && (
               <div className="space-y-4">
