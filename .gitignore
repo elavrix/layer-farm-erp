@@ -39,3 +39,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local extracted files / personal uploads
+files_1_extracted/
+*.pdf
+*.docx
