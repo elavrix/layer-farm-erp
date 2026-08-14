@@ -58,7 +58,8 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // Exclude /auth/* from middleware — those routes handle their own session logic.
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|auth/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
