@@ -42,6 +42,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // Auth handlers — must be accessible before session is set
+  if (pathname.startsWith('/auth/sso')) return supabaseResponse
+  if (pathname.startsWith('/auth/callback')) return supabaseResponse
+
   // If user has no session and is not on /login, redirect to /login
   if (!session && pathname !== '/login') {
     const url = request.nextUrl.clone()
